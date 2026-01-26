@@ -801,17 +801,29 @@ function convertAnthropicToOpenAI(anthropicBody) {
   }
   openaiBody.usage = { include: true };
 
-  // 转换 system prompt
+  // 转换 system prompt（保留 cache_control）
   if (anthropicBody.system) {
     if (typeof anthropicBody.system === "string") {
+      // 字符串格式，无法添加 cache_control
       openaiBody.messages.push({
         role: "system",
         content: anthropicBody.system,
       });
     } else if (Array.isArray(anthropicBody.system)) {
+      // 数组格式，保留完整结构（包括 cache_control）
+      const systemContent = anthropicBody.system.map(block => {
+        if (block.type === "text") {
+          const textBlock = { type: "text", text: block.text };
+          if (block.cache_control) {
+            textBlock.cache_control = block.cache_control;
+          }
+          return textBlock;
+        }
+        return block;
+      });
       openaiBody.messages.push({
         role: "system",
-        content: anthropicBody.system,
+        content: systemContent,
       });
     }
   }
@@ -1043,9 +1055,16 @@ async function convertOpenAIToAnthropic(openaiResponse, model) {
   const totalPromptTokens = openaiResponse.usage?.prompt_tokens || 0;
   const outputTokens = openaiResponse.usage?.completion_tokens || 0;
 
-  let cacheReadTokens = openaiResponse.usage?.prompt_tokens_details?.cached_tokens ||
-    openaiResponse.usage?.cache_read_input_tokens || 0;
-  let cacheCreationTokens = openaiResponse.usage?.cache_creation_input_tokens || 0;
+  // 提取缓存 token - 支持多种数据源格式
+  let cacheReadTokens = 
+    openaiResponse.usage?.prompt_tokens_details?.cached_tokens ||
+    openaiResponse.usage?.cache_read_input_tokens ||
+    openaiResponse.usage?.cached_tokens ||  // fallback
+    0;
+  let cacheCreationTokens = 
+    openaiResponse.usage?.cache_creation_input_tokens ||
+    openaiResponse.usage?.prompt_tokens_details?.cache_creation_tokens ||  // fallback
+    0;
 
   if (openaiResponse.usage?.cost) {
     const estimated = await estimateCacheTokensFromCost(
@@ -1175,14 +1194,20 @@ function createStreamTransformer(model, pricing) {
             totalCost = parsed.usage.cost;
           }
 
+          // 提取缓存读取 token（支持多种格式）
           if (parsed.usage.prompt_tokens_details?.cached_tokens) {
             cacheReadTokens = parsed.usage.prompt_tokens_details.cached_tokens;
           } else if (parsed.usage.cache_read_input_tokens) {
             cacheReadTokens = parsed.usage.cache_read_input_tokens;
+          } else if (parsed.usage.cached_tokens) {
+            cacheReadTokens = parsed.usage.cached_tokens;
           }
 
+          // 提取缓存创建 token（支持多种格式）
           if (parsed.usage.cache_creation_input_tokens) {
             cacheCreationTokens = parsed.usage.cache_creation_input_tokens;
+          } else if (parsed.usage.prompt_tokens_details?.cache_creation_tokens) {
+            cacheCreationTokens = parsed.usage.prompt_tokens_details.cache_creation_tokens;
           }
         }
 
